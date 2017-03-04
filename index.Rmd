@@ -1,33 +1,217 @@
 ---
-title: "PracticalMachineLearningCourseProject"
-author: "Andrea Heide"
-date: "2 März 2017"
 output: html_document
 ---
+<style type="text/css">
 
+body{ /* Normal  */
+   font-size: 11px;
+}
+td {  /* Table  */
+   font-size: 9px;
+}
+h1 { /* Header 1 */
+ font-size: 16px;
+ color: DarkBlue;
+}
+h2 { /* Header 2 */
+ font-size: 14px;
+ color: DarkBlue;
+}
+h3 { /* Header 3 */
+ font-size: 14px;
+ color: DarkBlue;
+}
+h4 { /* Header 4 */
+ font-size: 12px;
+ font-style: bold;
+ color: DarkBlue;
+}
+h5 { /* Header 5 */
+ font-size: 12px;
+ color: DarkBlue;
+}
+h6 { /* Header 6 */
+ font-size: 11px;
+ color: DarkBlue;
+}
+code.r{ /* Code block */
+  font-size: 11px;
+}
+pre { /* Code block */
+  font-size: 11px
+}
+</style>
 
-## This is just a test
+## Predicting with Machine Learning
+#### Classification: How well was an excerise with dumbells done?
+*Practical Machine Learning Course Project, Andrea Heide, March 3rd, 2017*  
+   
+### Executive Summary   
+The goal of this machine learning course project is to predict how well 6 participants performed barbell lifts, based on data collected from accelerometers on the belt, forearm, arm, and dumbell of the participants. They performed the barbell lifts correctly and incorrectly in 5 different ways, classified as follows:    
+ * class A - exactly according to the specification,  
+ * class B - throwing the elbows to the front,  
+ * class C - lifting the dumbbell only halfway,  
+ * class D - lowering the dumbbell only halfway and  
+ * class E - throwing the hips to the front.   
+To model the outcome (variable classe), a random forest algorihtm with 10-fold cross validation was used which achieved a 99% accuracy on the validation set. The 20 test cases were predicted correctly with this model and a svm model for comparison. Both models achieved 100% accuracy on the test set.
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+*Source of the data: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H.: Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.*   
+   
+***   
+
+### Loading the nescessary libraries    
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+library(rpart)
+library(rattle)
+library(parallel)
+library(doParallel)
+library(e1071)
+```
+   
+***   
+
+### Loading the data   
+```{r echo=TRUE}
+## training set
+file_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(file_url, destfile = "./pml-training.csv", method = "curl")
+training <- read.csv("./pml-training.csv")
+## testing set
+file_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(file_url, destfile = "./pml-testing.csv", method = "curl")
+testing <- read.csv("./pml-testing.csv")
+```
+   
+***   
+
+### Some pre-processing of the data   
+```{r echo=TRUE}
+## remove columns that are not relevant
+train1 <- training[, -(1:7)]
+test1 <- testing[, -(1:7)]
+## remove columns with more than 50% NA values 
+train2 <- train1[, -which(colMeans(is.na(train1)) > 0.5)]
+test2 <- test1[, -which(colMeans(is.na(train1)) > 0.5)]
+## remove columns with just the same value using the caret function nearZeroVar
+train3 <- train2[, - (nearZeroVar(train2))]
+test <- test2[, - (nearZeroVar(train2))]
+```
+   
+***   
+
+### Splitting the data into training and validation set   
+We have many variables and can assume complex relationships. To be able to explore and validate several prediction models, I split the training data into a training (75% of the data) and a validation set (25% of the data). 
+```{r echo=TRUE}
+set.seed(3312)
+inTrain=createDataPartition(train3$classe,p=0.75)[[1]]
+train=train3[ inTrain,]
+val=train3[-inTrain,]
+```
+The training set contains 14.718 records of 53 variables, the validation set contains 4.904 records. The test set contains 20 records of 53 variables. An overview over the variables is given here:
+```{r echo=TRUE}
+str(train)
+```
+   
+***   
+
+### Choosing the modelling algorithm   
+As the computations took a long time, I used the very valueable information on parallel processing provided by Len Greski in the course forum; I also followed his example to use 10-fold cross validation:
+```{r echo=TRUE}
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+Manually set a fit control with 10-fold cross-validation and parallel processing:
+```{r echo=TRUE}
+fitControl <- trainControl(method = "cv", number = 10, allowParallel = TRUE)
 ```
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+To get a first impression, I fitted a tree model with rpart. The resulting decision tree is plotted below. However, the accuracy was about 0.5 and therefore very low. 
+```{r echo=TRUE, cache=TRUE}
+## model
+modFit_rpart <- train(classe ~., method="rpart", data=train, trControl = fitControl)
+fancyRpartPlot(modFit_rpart$finalModel)
+print(modFit_rpart)
+## accuracy
+pred_rpart <- predict(modFit_rpart, newdata = val)
+confusionMatrix(pred_rpart, val$classe)
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+I then also tried pca pre processing to use only the most influential variables (explaining 80% of the outcome) to save computing time for the following steps.
+```{r echo=TRUE}
+pcaObj <- preProcess(train, method = "pca", thresh = 0.8)
+train_pca <- predict(pcaObj, train)
+val_pca <- predict(pcaObj, val)
+test_pca <- predict(pcaObj, test)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+We want to model a factor outcome using a large number of variables/predictors. In the Practical Machine Learning quiz no. 4, random forest performed well for such a task. Also, I read that Microsoft uses random forest for the Kinect -  a setting that might be similar to the classification problem of this project. Random forest is supposed to have great predicive power, with the downside of being a 'black box', not very intuitive. As our goal is to come up with the best possible prediction, I chose random forest, but also tried svm as a possible alternative in comparison. 
+If more computing power or time was available, I also would have tried boosting with "gbm" and stacking the prediction models, as in quiz no. 4.
+
+Fit the model with the desired random forest algorithm, using the defined control parameters, with and without pca: 
+```{r echo=TRUE, cache=TRUE}
+## model with pca
+modFit_rf_pca <- train(classe ~., method="rf", data=train_pca, trControl = fitControl)
+print(modFit_rf_pca)
+## model without pca
+modFit_rf <- train(classe ~., method="rf", data=train, trControl = fitControl)
+print(modFit_rf)
+```
+Accuracy:
+```{r echo=TRUE, cache=TRUE}
+## prediction with pca
+pred_rf_pca <- predict(modFit_rf_pca, newdata = val_pca)
+confusionMatrix(pred_rf_pca, val_pca$classe)
+## prediction without pca
+pred_rf <- predict(modFit_rf, newdata = val)
+confusionMatrix(pred_rf, val$classe)
+```
+
+As an alternative algorithm that might be fit to the task, I tried a support vector machine algorithm svm (as in quiz 4), again with and without pca:
+```{r echo=TRUE, cache=TRUE}
+## model with pca
+modFit_svm_pca <- svm(classe ~., data=train_pca, trControl = fitControl)
+print(modFit_svm_pca)
+## model without pca
+modFit_svm <- svm(classe ~., data=train, trControl = fitControl)
+print(modFit_svm)
+```
+Accuracy:
+```{r echo=TRUE, cache=TRUE}
+## prediction with pca
+pred_svm_pca <- predict(modFit_svm_pca, newdata = val_pca)
+confusionMatrix(pred_svm_pca, val_pca$classe)
+## prediction without pca
+pred_svm <- predict(modFit_svm, newdata = val)
+confusionMatrix(pred_svm, val$classe)
+```
+   
+***   
+
+## Expected out-of-sample error   
+From the accuracy of the models I caluclated the expected out-of-sample error, defined as 1 - accuracy for predictions made against the cross-validation set, for the various models and calculated with 10-fold cross-validation. The results are summarized below:
+
+| Model       | Accuracy      | Out of sample error
+| ------------|:-------------:|---------------------|
+| rpart       |     0.49     | 0.51        |
+| rf with pca |    0.96      |  0.04      |
+| rf          |     0.99     |   0.01     |
+| svm with pca |      0.85   |   0.15     |
+| svm       |         0.94    |   0.06    |
+
+As expected, the random forest model without pca has the best accuracy / smallest out-of-sample error.
+   
+***   
+
+### Prediction against the test set   
+I made the prediction against the test set both with the random forest model and with the svm model. The results for both calculations were identical and achieved a 100% score on the quiz.
+```{r echo=TRUE, cache=TRUE}
+## prediction with rf
+pred_final_rf <- predict(modFit_rf, newdata = test)
+## prediction with svm
+pred_final_svm <- predict(modFit_svm, newdata = test)
+## overview results
+predicted_cases <- data.frame(pred_final_rf)
+predicted_cases <- cbind(predicted_cases, pred_final_svm)
+predicted_cases
+```
